@@ -1,0 +1,81 @@
+Here's the tightened version. It's in a code block so you can copy it in one go.
+
+````markdown
+**Role:** Expert Python AI Engineer and Agentic Framework Architect
+
+**Objective:** Build a complete, installable Python SDK, `superpowers_agent`, that reimplements the ideas behind the `obra/superpowers` methodology (note: that project is a set of skill prompts and workflow conventions, so write your own distilled prompts rather than attempting a port). The SDK exposes a gated state machine: Brainstorming → Design Spec → Implementation Plan → Subagent Execution. It must work with any OpenAI-compatible endpoint, defaulting to OpenRouter.
+
+**Developer context:** I am a Python full-stack developer building agentic systems. I need production-quality code: typed, documented, tested, and with no hardcoded model or endpoint.
+
+## Core principles (must be enforced in code, not just in prompts)
+
+1. **No premature coding.** Enforce gates with a `WorkflowState` enum: `BRAINSTORMING → SPEC_APPROVED → PLAN_APPROVED → EXECUTING → DONE`. Calling `create_plan` before the spec is approved, or `execute_plan` before the plan is approved, must raise `WorkflowStateError`. Approval is an explicit method call by the human (`approve_spec()`, `approve_plan()`), never something the LLM can trigger.
+2. **YAGNI, DRY, TDD.** The planner prompt must require each task to start with a failing test, then the minimal implementation, then a refactor. It must also reject speculative features.
+3. **Subagent-driven development.** The plan is decomposed into atomic tasks, and each task is delegated to a fresh `SubAgent`.
+
+## Package structure
+
+```
+superpowers_agent/
+├── pyproject.toml
+├── README.md
+├── src/superpowers_agent/
+│   ├── __init__.py        # exports public API and __version__
+│   ├── client.py
+│   ├── prompts.py
+│   ├── models.py          # pydantic models + WorkflowState + custom exceptions
+│   ├── workflow.py
+│   ├── subagent.py
+│   └── sandbox.py         # path and command safety
+├── tests/
+│   ├── conftest.py        # MockLLMClient fixture returning scripted responses
+│   ├── test_workflow_gates.py
+│   ├── test_plan_parsing.py
+│   └── test_sandbox.py
+└── example_usage.py
+```
+
+## Requirements per file
+
+**`pyproject.toml`**
+- `[build-system]` using hatchling or setuptools, configured for the `src/` layout.
+- Name `superpowers_agent`, version, authors, Python >=3.10.
+- Dependencies: `openai>=1.0`, `pydantic>=2`, `python-dotenv`. Dev extras: `pytest`.
+
+**`prompts.py`**
+- `BRAINSTORMING_PROMPT`: the LLM acts as a product manager. It asks one or two clarifying questions per turn, never writes code, and, when the human signals readiness, emits a final design spec in a fixed Markdown structure (goals, non-goals, requirements, constraints, acceptance criteria).
+- `PLANNING_PROMPT`: takes the approved spec and outputs **only JSON** matching the `Plan` schema (below). It is written for a junior engineer with no project context, and it enforces YAGNI, DRY and TDD.
+- `SUBAGENT_PROMPT`: the agent executes only the assigned task, makes no changes outside the listed files, and returns **only JSON** matching the `TaskResult` schema.
+
+**`models.py`**
+- `WorkflowState` enum, `WorkflowStateError`, `PlanParseError`, `UnsafeActionError`.
+- `Task(id, title, description, files, test_first: bool, steps, depends_on)` and `Plan(tasks)`.
+- `FileWrite(path, content)`, `Command(cmd, timeout_s)`, `TaskResult(task_id, file_writes, commands, notes)`.
+
+**`client.py`: `LLMClient`**
+- Init args: `api_key` (falls back to the `OPENROUTER_API_KEY` env var), `base_url` (default `"https://openrouter.ai/api/v1"`, a plain string with no Markdown), `model`, `timeout`, `max_retries`, and optional `referer` and `app_title`, sent as the `HTTP-Referer` and `X-Title` headers.
+- `generate_response(messages: list[dict], json_mode: bool = False) -> str`. Retry with exponential backoff on rate limits, timeouts and 5xx errors, and raise a clear `LLMClientError` after the final attempt.
+- `generate_json(messages, schema: type[BaseModel]) -> BaseModel`. Try `response_format` JSON mode first. If the provider rejects it, fall back to prompting for JSON and extracting it from the text. Validate with pydantic, and on failure retry up to N times, feeding the validation error back to the model.
+
+**`workflow.py`: `AgenticWorkflow`**
+- Init with an `LLMClient` and optional `workspace_dir`. Hold the state and the conversation history.
+- `brainstorm(user_intent: str) -> str` starts the session and returns the model's first questions.
+- `brainstorm_reply(answer: str) -> str` continues the multi-turn loop. When the human says they are ready, the model returns the draft spec.
+- `approve_spec(edited_spec: str | None = None)` locks in the spec and moves to `SPEC_APPROVED`.
+- `create_plan() -> Plan` is gated, calls `generate_json(Plan)`, validates that dependencies reference real task ids and that there are no cycles, and moves to `PLAN_APPROVED` only after `approve_plan()` is called by the human.
+- `execute_plan(dry_run: bool = True) -> list[TaskResult]` is gated. It runs tasks in dependency order and creates one `SubAgent` per task. Each gets the spec, the plan and the results of completed tasks as context. On a task failure it stops and reports. Dry-run is the default.
+
+**`subagent.py`: `SubAgent`**
+- `run(task, context) -> TaskResult` applies `SUBAGENT_PROMPT`, calls `generate_json(TaskResult)`, and, unless `dry_run`, applies the result through `sandbox.py`: write files, then run commands.
+
+**`sandbox.py`**
+- Resolve every file path and reject anything that escapes `workspace_dir` (including `..` and symlinks).
+- Run commands only from a configurable allowlist (default: `pytest`, `python`, `pip`, `git`, `ls`), with `shell=False`, `cwd=workspace_dir`, a timeout and captured output. Raise `UnsafeActionError` on violations.
+
+## Deliverables
+Generate complete, copy-pasteable code for **every file in the structure above**, including `__init__.py`, `models.py`, `subagent.py`, `sandbox.py` and the tests, plus `example_usage.py`. The example should show a developer running `pip install -e .`, setting `OPENROUTER_API_KEY`, using a non-OpenAI model (e.g. `meta-llama/llama-3.1-70b-instruct` or `deepseek/deepseek-chat`), walking through brainstorm → approve → plan → approve → dry-run execute, and catching `WorkflowStateError` when a gate is skipped.
+
+All code needs type hints, docstrings, logging (no bare `print` in library code), and specific exceptions rather than bare `except`. Tests must use the mock client and make no network calls.
+````
+
+Two small notes: I made dry-run the default so a first run can't write files or run commands unexpectedly, and I left the model names in the example as suggestions, since OpenRouter's model IDs change from time to time and you should check them there.
