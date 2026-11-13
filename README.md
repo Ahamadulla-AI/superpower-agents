@@ -16,7 +16,7 @@ From the root of the project where your LLM coding agent will work, run:
 superpower-agents init
 ```
 
-This copies the bundled skills to `.agents/skills/` in the current project. The skills cover brainstorming, writing specifications, implementation planning, and executing approved tasks. They are plain `SKILL.md` files that coding agents supporting the `.agents/skills/` convention can discover and use.
+This copies the bundled skills to `.agents/skills/` in the current project. The skills cover brainstorming, specification and plan writing, implementation, testing, debugging, code review, worktree management, and other development workflows. They are plain `SKILL.md` files that coding agents supporting the `.agents/skills/` convention can discover and use.
 
 To initialize a different project directory:
 
